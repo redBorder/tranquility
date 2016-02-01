@@ -202,7 +202,7 @@ lazy val storm = project.in(file("storm"))
 
 lazy val samza = project.in(file("samza"))
   .settings(commonSettings: _*)
-  .settings(name := "tranquility-samza")
+  .settings(name := "tranquility-samza-auto")
   .settings(libraryDependencies ++= (samzaDependencies ++ samzaTestDependencies))
   // don't compile or publish for Scala > 2.10
   .settings((skip in compile) := scalaVersion { sv => !sv.startsWith("2.10.") }.value)

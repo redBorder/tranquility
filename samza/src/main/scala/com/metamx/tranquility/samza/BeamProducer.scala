@@ -57,10 +57,13 @@ class BeamProducer(
 
     val partitionRef = partitionsRef.getOrElseUpdate(streamName, streamPartitions)
 
-    if (partitionsRef != streamPartitions) {
+    if (partitionRef != streamPartitions) {
       senders.remove(streamName) match {
-        case Some(sender) => sender.stop()
-        case None => log.info("Stream[%s] doesn't exists!", streamName)
+        case Some(t) =>
+          log.info("Stopping sender[%s]", streamName)
+          t.stop()
+        case None =>
+          log.info("Stream[%s] doesn't exists!", streamName)
       }
       partitionsRef.update(streamName, streamPartitions)
     }
