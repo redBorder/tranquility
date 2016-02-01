@@ -28,16 +28,16 @@ import org.apache.samza.system.SystemStream
 import scala.collection.mutable
 
 class BeamProducer(
-  beamFactory: BeamFactory,
-  systemName: String,
-  config: Config,
-  batchSize: Int,
-  maxPendingBatches: Int,
-  throwOnError: Boolean
-) extends SystemProducer with Logging
-{
+                    beamFactory: BeamFactory,
+                    systemName: String,
+                    config: Config,
+                    batchSize: Int,
+                    maxPendingBatches: Int,
+                    throwOnError: Boolean
+                  ) extends SystemProducer with Logging {
   // stream => sender
   private val senders = mutable.Map[String, SimpleTranquilizerAdapter[Any]]()
+  private val partitionsRef = mutable.Map[String, String]()
 
   override def start() {}
 
@@ -52,11 +52,24 @@ class BeamProducer(
   override def send(source: String, envelope: OutgoingMessageEnvelope) {
     val streamName = envelope.getSystemStream.getStream
     val message = envelope.getMessage
+    val partitions = envelope.getKey.asInstanceOf[Int]
+    val streamPartitions = "%s.%s" format(streamName, partitions)
+
+    val partitionRef = partitionsRef.getOrElseUpdate(streamName, streamPartitions)
+
+    if (partitionsRef != streamPartitions) {
+      senders.remove(streamName) match {
+        case Some(sender) => sender.stop()
+        case None => log.info("Stream[%s] doesn't exists!", streamName)
+      }
+      partitionsRef.update(streamName, streamPartitions)
+    }
+
     val sender = senders.getOrElseUpdate(
       streamName, {
         log.info("Creating beam for stream[%s.%s].", systemName, streamName)
         val t = Tranquilizer.create(
-          beamFactory.makeBeam(new SystemStream(systemName, streamName), config),
+          beamFactory.makeBeam(new SystemStream(systemName, streamName), partitions, config),
           batchSize,
           maxPendingBatches,
           Tranquilizer.DefaultLingerMillis

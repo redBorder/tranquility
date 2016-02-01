@@ -35,5 +35,5 @@ trait BeamFactory
    * @param config config for this job
    * @return beam for a BeamProducer
    */
-  def makeBeam(stream: SystemStream, config: Config): Beam[Any]
+  def makeBeam(stream: SystemStream, partitions: Int, config: Config): Beam[Any]
 }
