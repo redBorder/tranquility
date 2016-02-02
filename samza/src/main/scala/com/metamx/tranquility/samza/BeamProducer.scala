@@ -37,7 +37,9 @@ class BeamProducer(
                   ) extends SystemProducer with Logging {
   // stream => sender
   private val senders = mutable.Map[String, SimpleTranquilizerAdapter[Any]]()
-  private val partitionsRef = mutable.Map[String, String]()
+
+  // stream => current stream partitions
+  private val partitionsRef = mutable.Map[String, Int]()
 
   override def start() {}
 
@@ -53,24 +55,30 @@ class BeamProducer(
     val streamName = envelope.getSystemStream.getStream
     val message = envelope.getMessage
     val partitions = envelope.getKey.asInstanceOf[Int]
-    val streamPartitions = "%s.%s" format(streamName, partitions)
 
-    val partitionRef = partitionsRef.getOrElseUpdate(streamName, streamPartitions)
+    // Get the previous partitions from stream or create it
+    val partitionRef = partitionsRef.getOrElseUpdate(streamName, {
+      log.info("Creating new partitionsRef[%s] to datasource[%s]", partitions, streamName)
+      partitions
+    })
 
-    if (partitionRef != streamPartitions) {
+    // Check if the previous state partitions is the same that current desire partitions
+    //  * If it is different clean and stop the sender, and update partitionsRef.
+    if (partitionRef != partitions) {
       senders.remove(streamName) match {
         case Some(t) =>
-          log.info("Stopping sender[%s]", streamName)
+          log.info("Stopping sender[%s] with partitionRef[%s]", streamName, partitionRef)
           t.stop()
         case None =>
           log.info("Stream[%s] doesn't exists!", streamName)
       }
-      partitionsRef.update(streamName, streamPartitions)
+      partitionsRef.update(streamName, partitions)
     }
 
+    // Get sender from stream or create it with desire partitions.
     val sender = senders.getOrElseUpdate(
       streamName, {
-        log.info("Creating beam for stream[%s.%s].", systemName, streamName)
+        log.info("Creating beam for stream[%s.%s] with partitions[%s].", systemName, streamName, partitions)
         val t = Tranquilizer.create(
           beamFactory.makeBeam(new SystemStream(systemName, streamName), partitions, config),
           batchSize,
