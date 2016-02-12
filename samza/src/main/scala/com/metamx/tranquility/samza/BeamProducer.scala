@@ -58,17 +58,16 @@ class BeamProducer(
 
     // Get the previous partitions from stream or create it
     val partitionRef = partitionsRef.getOrElseUpdate(streamName, {
-      log.info("Creating new partitionsRef[%s] to datasource[%s]",
-        String.format("%s_%s", partitionsReplicas(0), partitionsReplicas(1)), streamName)
+      log.info("Creating new partitionsRef[%s] to datasource[%s]", "%s_%s".format(partitionsReplicas(0), partitionsReplicas(1)), streamName)
       partitionsReplicas
     })
 
     // Check if the previous state partitions is the same that current desire partitions
     //  * If it is different clean and stop the sender, and update partitionsRef.
-    if (partitionRef sameElements partitionsReplicas) {
+    if (!(partitionRef sameElements partitionsReplicas)) {
       senders.remove(streamName) match {
         case Some(t) =>
-          log.info("Stopping sender[%s] with partitionRef[%s]", streamName, partitionRef)
+          log.info("Stopping sender[%s] with partitionRef[%s]", streamName, "%s_%s".format(partitionRef(0), partitionRef(1)))
           t.stop()
         case None =>
           log.info("Stream[%s] doesn't exists!", streamName)
