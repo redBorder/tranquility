@@ -1,4 +1,5 @@
 ## Tranquility
+[![Codacy Badge](https://api.codacy.com/project/badge/grade/93a9ae745c9e417ca1a12125535b773b)](https://www.codacy.com/app/redBorder/tranquility)
 
 > &#8220;Stay close, my friends, and I will heal your wounds.&#8221;<br />
 > &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&mdash;Mythen of the Wild
