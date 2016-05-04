@@ -14,8 +14,9 @@ val jacksonOneVersion = "1.9.13"
 // See https://github.com/druid-io/druid/pull/1669, https://github.com/druid-io/tranquility/pull/81 before upgrading Jackson
 val jacksonTwoVersion = "2.4.6"
 val jacksonTwoModuleScalaVersion = "2.4.5"
-val druidVersion = "0.8.2"
-val flinkVersion = "0.10.1"
+val druidVersion = "0.9.0"
+val guiceVersion = "4.0"
+val flinkVersion = "1.0.0"
 val finagleVersion = "6.31.0"
 val twitterUtilVersion = "6.30.0"
 val samzaVersion = "0.8.0"
@@ -63,9 +64,9 @@ val coreDependencies = Seq(
   "com.fasterxml.jackson.module" %% "jackson-module-scala" % jacksonTwoModuleScalaVersion force()
 ) ++ Seq(
   dependOnDruid("druid-server"),
-  "com.google.inject" % "guice" % "4.0-beta" force(),
-  "com.google.inject.extensions" % "guice-servlet" % "4.0-beta" force(),
-  "com.google.inject.extensions" % "guice-multibindings" % "4.0-beta" force(),
+  "com.google.inject" % "guice" % guiceVersion force(),
+  "com.google.inject.extensions" % "guice-servlet" % guiceVersion force(),
+  "com.google.inject.extensions" % "guice-multibindings" % guiceVersion force(),
   "javax.validation" % "validation-api" % "1.1.0.Final" force()
 )
 
@@ -78,11 +79,9 @@ val loggingDependencies = Seq(
   "org.slf4j" % "jul-to-slf4j" % "1.7.12"
 )
 
-// Flink 2.10 dependency names do not contain the scala version suffix. 2.11 dependencies do.
 def flinkDependencies(scalaVersion: String) = {
-  val suffix = if (scalaVersion.startsWith("2.11")) "_2.11" else ""
   Seq(
-    "org.apache.flink" % s"flink-streaming-scala$suffix" % flinkVersion % "optional"
+    "org.apache.flink" %% "flink-streaming-scala" % flinkVersion % "optional"
     exclude("log4j", "log4j")
     exclude("org.slf4j", "slf4j-log4j12")
     force()
@@ -139,10 +138,9 @@ val coreTestDependencies = Seq(
 ) ++ loggingDependencies.map(_ % "test")
 
 def flinkTestDependencies(scalaVersion: String) = {
-  val suffix = if (scalaVersion.startsWith("2.11")) "_2.11" else ""
-  Seq("org.apache.flink" % s"flink-core$suffix" % flinkVersion % "test" classifier "tests",
-    "org.apache.flink" % s"flink-runtime$suffix" % flinkVersion % "test" classifier "tests",
-    "org.apache.flink" % s"flink-test-utils$suffix" % flinkVersion % "test"
+  Seq("org.apache.flink" % "flink-core" % flinkVersion % "test" classifier "tests",
+    "org.apache.flink" %% "flink-runtime" % flinkVersion % "test" classifier "tests",
+    "org.apache.flink" %% "flink-test-utils" % flinkVersion % "test"
   ).map(_ exclude("log4j", "log4j") exclude("org.slf4j", "slf4j-log4j12") force()) ++
     loggingDependencies.map(_ % "test")
 }
@@ -164,7 +162,11 @@ val kafkaTestDependencies = Seq(
 lazy val commonSettings = Seq(
   organization := "io.druid",
 
-  javaOptions := Seq("-Xms512m", "-Xmx512m"),
+  javaOptions := Seq("-Xms512m", "-Xmx512m", "-XX:MaxPermSize=256M"),
+
+  // Target Java 7
+  scalacOptions += "-target:jvm-1.7",
+  javacOptions in compile ++= Seq("-source", "1.7", "-target", "1.7"),
 
   // resolve-term-conflict:object since storm-core has a package and object with the same name
   scalacOptions := Seq("-feature", "-deprecation", "-Yresolve-term-conflict:object"),

@@ -27,15 +27,21 @@ import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Walker
 import com.metamx.common.scala.untyped.Dict
 import com.metamx.tranquility.server.http.TranquilityServlet._
-import com.metamx.tranquility.tranquilizer.SimpleTranquilizerAdapter
+import com.metamx.tranquility.tranquilizer.BufferFullException
+import com.metamx.tranquility.tranquilizer.MessageDroppedException
 import com.metamx.tranquility.tranquilizer.Tranquilizer
+import com.twitter.util.Return
+import com.twitter.util.Throw
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.ws.rs.core.MediaType
 import org.jboss.netty.handler.codec.http.HttpResponseStatus
 import org.scalatra.ScalatraServlet
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 class TranquilityServlet(
-  tranquilizers: Map[String, Tranquilizer[Dict]]
+  tranquilizers: Map[String, Tranquilizer[java.util.Map[String, AnyRef]]]
 ) extends ScalatraServlet with Logging
 {
   get("/") {
@@ -64,15 +70,17 @@ class TranquilityServlet(
       |                             └▓▓▓▓▓▓▓   ▀▓▓▓▓▓▓▓███▀▀
       |
       |
-      |""".stripMargin
+      | """.stripMargin
   }
 
   post("/v1/post") {
-    doV1Post(None)
+    val async = yesNo("async", false)
+    doV1Post(None, async)
   }
 
   post("/v1/post/:dataSource") {
-    doV1Post(Some(params("dataSource")))
+    val async = yesNo("async", false)
+    doV1Post(Some(params("dataSource")), async)
   }
 
   notFound {
@@ -108,33 +116,76 @@ class TranquilityServlet(
       )
   }
 
-  private def doV1Post(dataSource: Option[String]): Array[Byte] = {
+  private def doV1Post(dataSource: Option[String], async: Boolean): Array[Byte] = {
     val objectMapper = getObjectMapper()
     val messages = Messages.fromInputStreamV1(objectMapper, request.inputStream, dataSource)
-    val (received, sent) = doSend(messages)
+    val (received, sent) = doSend(messages, async)
     val result = Dict("result" -> Dict("received" -> received, "sent" -> sent))
     contentType = request.contentType.get
     objectMapper.writeValueAsBytes(result)
   }
 
-  private def doSend(messages: Walker[(String, Dict)]): (Long, Long) = {
-    val senders = mutable.HashMap[String, SimpleTranquilizerAdapter[Dict]]()
-
+  private def doSend(messages: Walker[(String, Dict)], async: Boolean): (Long, Long) = {
+    val senders = mutable.HashMap[String, Tranquilizer[java.util.Map[String, AnyRef]]]()
+    val received = new AtomicLong
+    val sent = new AtomicLong
+    val exception = new AtomicReference[Throwable]
     for ((dataSource, message) <- messages) {
       val sender = senders.getOrElseUpdate(
         dataSource, {
-          val tranquilizer: Tranquilizer[Dict] = tranquilizers.get(dataSource) getOrElse {
-            throw new HttpException(HttpResponseStatus.BAD_REQUEST, s"No beam defined for dataSource '$dataSource'")
-          }
-          tranquilizer.simple(false)
+          tranquilizers.getOrElse(
+            dataSource, {
+              throw new HttpException(HttpResponseStatus.BAD_REQUEST, s"No beam defined for dataSource '$dataSource'")
+            }
+          )
         }
       )
-      sender.send(message)
+
+      received.incrementAndGet()
+
+      val future = try {
+        sender.send(message.asJava.asInstanceOf[java.util.Map[String, AnyRef]])
+      }
+      catch {
+        case e: BufferFullException =>
+          throw new HttpException(HttpResponseStatus.SERVICE_UNAVAILABLE, s"Buffer full for dataSource '$dataSource'")
+      }
+
+      future respond {
+        case Return(_) => sent.incrementAndGet()
+        case Throw(e: MessageDroppedException) => // Suppress
+        case Throw(e) => exception.compareAndSet(null, e)
+      }
+
+      // async => ignore sent, exception; just receive things.
+      if (!async && exception.get() != null) {
+        throw exception.get()
+      }
     }
 
-    senders.values.foreach(_.flush())
-    (senders.values.map(_.receivedCount).sum, senders.values.map(_.sentCount).sum)
+    // async => ignore sent, exception; just receive things.
+    if (!async) {
+      senders.values.foreach(_.flush())
+
+      if (exception.get() != null) {
+        throw exception.get()
+      }
+    }
+
+    (received.get(), if (async) 0L else sent.get())
   }
+
+  private def yesNo(k: String, defaultValue: Boolean): Boolean = {
+    request.parameters.get(k) map { s =>
+      s.toLowerCase() match {
+        case "true" | "1" | "yes" => true
+        case "false" | "0" | "no" | "" => false
+        case _ =>
+          throw new HttpException(HttpResponseStatus.BAD_REQUEST, "Expected true or false")
+      }
+    } getOrElse defaultValue
+  }
+
 }
 
 object TranquilityServlet

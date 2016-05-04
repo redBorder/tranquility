@@ -9,3 +9,9 @@ dist/
 .DS_Store
 /conf
 /log
+/derby.log
+*/conf
+*/log
+*/derby.log
+*/var/druid/metadata.db/*
+*/druid-tasks

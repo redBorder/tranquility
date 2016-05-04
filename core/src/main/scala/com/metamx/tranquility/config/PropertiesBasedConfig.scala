@@ -25,17 +25,27 @@ import com.metamx.common.scala.untyped.Dict
 import com.metamx.tranquility.beam.ClusteredBeamTuning
 import com.metamx.tranquility.druid.DruidBeamConfig
 import com.metamx.tranquility.tranquilizer.Tranquilizer
-import io.druid.segment.realtime.FireDepartment
+import java.util.Properties
 import org.joda.time.Period
 import org.skife.config.Config
+import org.skife.config.ConfigurationObjectFactory
+import scala.collection.JavaConverters._
 
-abstract class TranquilityConfig(globalProperties: Set[String]) extends DiscoConfig
+abstract class PropertiesBasedConfig(
+  private[config] val globalPropertyNames: Set[String]
+) extends DiscoConfig
 {
-  def this() {
+  private var props: Properties = null
+
+  def this(names: java.util.Set[String]) = {
+    this(names.asScala.toSet)
+  }
+
+  def this() = {
     this(Set[String]())
   }
 
-  val GlobalProperties = Set[String]() ++ globalProperties
+  def properties: Properties = props
 
   @Config(Array("druid.selectors.indexing.serviceName"))
   def druidIndexingServiceName: String = "druid/overlord"
@@ -62,10 +72,10 @@ abstract class TranquilityConfig(globalProperties: Set[String]) extends DiscoCon
   def tranquilityMaxPendingBatches: Int = Tranquilizer.DefaultMaxPendingBatches
 
   @Config(Array("tranquility.lingerMillis"))
-  def tranquilityLingerMillis: Int = Tranquilizer.DefaultLingerMillis
+  def tranquilityLingerMillis: Long = Tranquilizer.DefaultLingerMillis
 
   @Config(Array("druid.discovery.curator.path"))
-  def discoPath: String = "/druid/discovery"
+  override def discoPath: String = "/druid/discovery"
 
   @Config(Array("druidBeam.firehoseGracePeriod"))
   def firehoseGracePeriod: Period = DruidBeamConfig().firehoseGracePeriod
@@ -88,6 +98,15 @@ abstract class TranquilityConfig(globalProperties: Set[String]) extends DiscoCon
   @Config(Array("druidBeam.firehoseBufferSize"))
   def firehoseBufferSize: Int = DruidBeamConfig().firehoseBufferSize
 
+  @Config(Array("druidBeam.overlordLocator"))
+  def overlordLocator = DruidBeamConfig().overlordLocator
+
+  @Config(Array("druidBeam.taskLocator"))
+  def taskLocator = DruidBeamConfig().taskLocator
+
+  @Config(Array("druidBeam.overlordPollPeriod"))
+  def overlordPollPeriod = DruidBeamConfig().overlordPollPeriod
+
   def druidBeamConfig: DruidBeamConfig = DruidBeamConfig.builder()
     .firehoseGracePeriod(firehoseGracePeriod)
     .firehoseQuietPeriod(firehoseQuietPeriod)
@@ -96,9 +115,28 @@ abstract class TranquilityConfig(globalProperties: Set[String]) extends DiscoCon
     .randomizeTaskId(randomizeTaskId)
     .indexRetryPeriod(indexRetryPeriod)
     .firehoseBufferSize(firehoseBufferSize)
+    .overlordLocator(overlordLocator)
+    .taskLocator(taskLocator)
+    .overlordPollPeriod(overlordPollPeriod)
     .build()
 
   override def discoAnnounce: Option[DiscoAnnounceConfig] = None
 }
 
-case class DataSourceConfig[T <: TranquilityConfig](config: T, dataSource: String, specMap: Dict)
+object PropertiesBasedConfig
+{
+  def fromDict[ConfigType <: PropertiesBasedConfig](
+    d: Dict,
+    clazz: Class[ConfigType]
+  ): ConfigType =
+  {
+    val properties = new Properties
+    for ((k, v) <- d if v != null) {
+      properties.setProperty(k, String.valueOf(v))
+    }
+    val configFactory = new ConfigurationObjectFactory(properties)
+    val config = configFactory.build(clazz)
+    config.props = properties
+    config
+  }
+}

@@ -20,6 +20,7 @@
 package com.metamx.tranquility.test
 
 import com.fasterxml.jackson.core.JsonGenerator
+import com.google.common.util.concurrent.ThreadFactoryBuilder
 import com.metamx.common.scala.Jackson
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
@@ -27,23 +28,36 @@ import com.metamx.common.scala.concurrent.abortingRunnable
 import com.metamx.common.scala.untyped.Dict
 import com.metamx.tranquility.beam.Beam
 import com.metamx.tranquility.beam.MemoryBeam
+import com.metamx.tranquility.druid.DruidRollup
+import com.metamx.tranquility.druid.SpecificDruidDimensions
 import com.metamx.tranquility.test.TranquilizerTest._
+import com.metamx.tranquility.tranquilizer.BufferFullException
 import com.metamx.tranquility.tranquilizer.MessageDroppedException
 import com.metamx.tranquility.tranquilizer.Tranquilizer
 import com.metamx.tranquility.typeclass.JsonWriter
 import com.twitter.util.Await
 import com.twitter.util.Future
 import com.twitter.util.Promise
+import com.twitter.util.Return
+import com.twitter.util.Throw
+import io.druid.granularity.QueryGranularity
+import io.druid.query.aggregation.CountAggregatorFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import org.scalatest.FunSuite
+import org.scalatest.Matchers
 import scala.collection.immutable.BitSet
-import scala.collection.immutable.IndexedSeq
 import scala.util.Random
 
-class TranquilizerTest extends FunSuite with Logging
+class TranquilizerTest extends FunSuite with Matchers with Logging
 {
-  def doSend(tranquilizer: Tranquilizer[String], strings: Seq[String]): (Long, Long, Long) = {
+  def doSend(
+    tranquilizer: Tranquilizer[String],
+    strings: Seq[String],
+    doFlush: Boolean = false
+  ): (Long, Long, Long) =
+  {
     val futures = for (string <- strings) yield {
       tranquilizer.send(string) map { ok =>
         (1L, 0L, 0L)
@@ -53,6 +67,9 @@ class TranquilizerTest extends FunSuite with Logging
         case e: Exception =>
           (0L, 0L, 1L)
       }
+    }
+    if (doFlush) {
+      tranquilizer.flush()
     }
     Await.result(Future.collect(futures)).foldLeft((0L, 0L, 0L)) { (a, b) =>
       (a._1 + b._1, a._2 + b._2, a._3 + b._3)
@@ -82,6 +99,23 @@ class TranquilizerTest extends FunSuite with Logging
       newTranquilizer(beam, maxBatchSize, maxPendingBatches, lingerMillis).withFinally(_._1.stop()) {
         case (tranquilizer, desc) =>
           val (acked, dropped, failed) = doSend(tranquilizer, Seq("hey", "what"))
+          assert(acked === 2, "acked (%s)" format desc)
+          assert(dropped === 0, "dropped (%s)" format desc)
+          assert(failed === 0, "failed (%s)" format desc)
+          assert(
+            MemoryBeam.get("foo") === Seq(Dict("bar" -> "hey"), Dict("bar" -> "what")),
+            "output (%s)" format desc
+          )
+      }
+    }
+  }
+
+  test("Send by flush") {
+    for (beam <- newBeams(); maxBatchSize <- Seq(100); maxPendingBatches <- Seq(1, 5); lingerMillis <- MomentsSoDear) {
+      MemoryBeam.clear()
+      newTranquilizer(beam, maxBatchSize, maxPendingBatches, lingerMillis).withFinally(_._1.stop()) {
+        case (tranquilizer, desc) =>
+          val (acked, dropped, failed) = doSend(tranquilizer, Seq("hey", "what"), true)
           assert(acked === 2, "acked (%s)" format desc)
           assert(dropped === 0, "dropped (%s)" format desc)
           assert(failed === 0, "failed (%s)" format desc)
@@ -201,11 +235,81 @@ class TranquilizerTest extends FunSuite with Logging
       }
     }
   }
+
+  test("Multithreaded batch sends") {
+    for {
+      beam <- Seq(newDelayedMemoryBeam(50, 0.2))
+      maxBatchSize <- Seq(2000)
+      maxPendingBatches <- Seq(1, 5)
+      lingerMillis <- Seq(0, 100)
+    } {
+      MemoryBeam.clear()
+      val exec = Executors.newFixedThreadPool(8, new ThreadFactoryBuilder().setDaemon(true).build())
+      val allAcked = new AtomicLong
+      val sender = Tranquilizer.create(beam, maxBatchSize, maxPendingBatches, lingerMillis)
+      sender.start()
+      val futures = for (i <- 0 until 8) yield {
+        exec.submit(
+          new Runnable
+          {
+            override def run(): Unit = {
+              val acked = new AtomicLong
+              val failed = new AtomicLong
+
+              for (j <- 0 until 40003) {
+                sender.send("x") respond {
+                  case Return(_) => acked.incrementAndGet()
+                  case Throw(e) => failed.incrementAndGet()
+                }
+              }
+
+              sender.flush()
+              if (failed.get() == 0) {
+                allAcked.addAndGet(acked.get())
+              }
+            }
+          }
+        )
+      }
+
+      futures foreach (_.get())
+      exec.shutdown()
+      exec.awaitTermination(10, TimeUnit.MINUTES)
+      sender.stop()
+      assert(allAcked.get() === 40003 * 8)
+    }
+
+  }
+
+  test("Send with BufferFullExceptions") {
+    for {
+      beam <- Seq(newDelayedMemoryBeam(500, 0.1))
+      maxBatchSize <- Seq(10)
+      maxPendingBatches <- Seq(1, 5)
+      lingerMillis <- Seq(0, 100)
+    } {
+      MemoryBeam.clear()
+      val builder = Tranquilizer.builder()
+        .maxBatchSize(maxBatchSize)
+        .maxPendingBatches(maxPendingBatches)
+        .lingerMillis(lingerMillis)
+        .blockOnFull(false)
+      newTranquilizer(beam, builder).withFinally(_._1.stop()) {
+        case (tranquilizer, desc) =>
+          val count = 200002
+          val messages: Seq[String] = (0 until count) map (_ => "x")
+          val e = the[BufferFullException] thrownBy {
+            doSend(tranquilizer, messages)
+          }
+          e.getMessage should be("Buffer full")
+      }
+    }
+  }
 }
 
 object TranquilizerTest
 {
-  val MomentsSoDear = Seq(525600 * 60000)
+  val MomentsSoDear = Seq(525600 * 60000, -1)
 
   def newBeams(): Seq[Beam[String]] = {
     Seq(
@@ -255,13 +359,7 @@ object TranquilizerTest
     }
   }
 
-  def newTranquilizer(
-    beam: Beam[String],
-    maxBatchSize: Int,
-    maxPendingBatches: Int,
-    lingerMillis: Long
-  ): (Tranquilizer[String], String) =
-  {
+  def newTranquilizer(beam: Beam[String], builder: Tranquilizer.Builder): (Tranquilizer[String], String) = {
     val wrappedBeam = new Beam[String] {
       override def sendBatch(events: Seq[String]): Future[BitSet] = {
         if (events.contains("__fail__")) {
@@ -276,15 +374,26 @@ object TranquilizerTest
       override def close() = beam.close()
     }
 
-    val tranquilizer = Tranquilizer.create(wrappedBeam, maxBatchSize, maxPendingBatches, lingerMillis)
-    val desc = s"(maxBatchSize = $maxBatchSize, " +
-      s"maxPendingBatches = $maxPendingBatches, " +
-      s"lingerMillis = $lingerMillis, " +
-      s"beam = $beam)"
+    val tranquilizer = builder.build(wrappedBeam)
+    val desc = s"(builder = $builder, beam = $beam)"
 
     tranquilizer.start()
     (tranquilizer, desc)
   }
 
-  override def toString = s"TranquilizerTest()"
+  def newTranquilizer(
+    beam: Beam[String],
+    maxBatchSize: Int,
+    maxPendingBatches: Int,
+    lingerMillis: Long
+  ): (Tranquilizer[String], String) =
+  {
+    newTranquilizer(
+      beam,
+      Tranquilizer.builder()
+        .maxBatchSize(maxBatchSize)
+        .maxPendingBatches(maxPendingBatches)
+        .lingerMillis(lingerMillis)
+    )
+  }
 }

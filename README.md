@@ -16,9 +16,8 @@ General:
 
 - [Overview](docs/overview.md) - Introduction to Tranquility concepts, including details about how it creates and
   manages Druid tasks.
-- [DruidBeams](docs/druidbeams.md) - The first step to using Tranquility is to configure it appropriately for your
-  Druid dataSource. For most modules (including core, storm, spark, and samza) this is generally done through the
-  DruidBeams builder object.
+- [Configuration](docs/configuration.md) - The first step to using Tranquility is to configure it appropriately for your
+  Druid dataSource. This is generally done through a configuration file, with optional refinements in code.
 - [Troubleshooting](docs/trouble.md) - Solutions to common problems.
 
 Modules:
@@ -34,30 +33,35 @@ Modules:
 
 ### Getting Tranquility with Maven
 
-Tranquility [Core](docs/core.md), [Samza](docs/samza.md), [Spark](docs/spark.md), and [Storm](docs/storm.md) are
-meant to be included in an application that you write. Those modules are hosted on Maven Central to make them
-easy to include. The current stable versions are:
+Tranquility [Core](docs/core.md), [Samza](docs/samza.md), [Spark](docs/spark.md), [Storm](docs/storm.md) and 
+[Flink](docs/flink.md) are meant to be included in an application that you write. Those modules are hosted on Maven 
+Central to make them easy to include. The current stable versions are:
 
 ```xml
 <dependency>
   <groupId>io.druid</groupId>
   <artifactId>tranquility-core_2.11</artifactId>
-  <version>0.7.2</version>
+  <version>0.7.4</version>
 </dependency>
 <dependency>
   <groupId>io.druid</groupId>
   <artifactId>tranquility-samza_2.10</artifactId>
-  <version>0.7.2</version>
+  <version>0.7.4</version>
 </dependency>
 <dependency>
   <groupId>io.druid</groupId>
   <artifactId>tranquility-spark_2.11</artifactId>
-  <version>0.7.2</version>
+  <version>0.7.4</version>
 </dependency>
 <dependency>
   <groupId>io.druid</groupId>
   <artifactId>tranquility-storm_2.11</artifactId>
-  <version>0.7.2</version>
+  <version>0.7.4</version>
+</dependency>
+<dependency>
+  <groupId>io.druid</groupId>
+  <artifactId>tranquility-flink_2.11</artifactId>
+  <version>0.7.4</version>
 </dependency>
 ```
 
@@ -81,10 +85,10 @@ run them directly. The distribution also includes the [Core API](docs/core.md) a
 them rather than get them through Maven.
 
 The current distribution is:
-[tranquility-distribution-0.7.2](http://static.druid.io/tranquility/releases/tranquility-distribution-0.7.2.tgz).
+[tranquility-distribution-0.7.4](http://static.druid.io/tranquility/releases/tranquility-distribution-0.7.4.tgz).
 
 To use it, first download it and then unpack it into your directory of choice by running
-`tar -xzf tranquility-distribution-0.7.2.tgz`.
+`tar -xzf tranquility-distribution-0.7.4.tgz`.
 
 ### How to Contribute
 

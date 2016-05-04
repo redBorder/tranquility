@@ -17,20 +17,14 @@
  * under the License.
  */
 
-package com.metamx.tranquility.server
+package org.apache.logging.log4j.core.util;
 
-import com.metamx.tranquility.config.TranquilityConfig
-import org.joda.time.Period
-import org.skife.config.Config
-
-abstract class ServerConfig extends TranquilityConfig(Set("http.port", "http.threads", "http.idleTimeout"))
+/**
+ * Dummy interface included because Druid's Initialization.makeInjectorWithModules has a runtime dependency on
+ * log4j-core, but we don't want to include that as we are using logback.
+ *
+ * Only needed in test, since at runtime we use a stripped-down DruidGuicer rather than a full-on Druid injector.
+ */
+public interface Cancellable
 {
-  @Config(Array("http.port"))
-  def httpPort: Int = 8200
-
-  @Config(Array("http.threads"))
-  def httpThreads: Int = 8
-
-  @Config(Array("http.idleTimeout"))
-  def httpIdleTimeout: Period = new Period("PT5M")
 }

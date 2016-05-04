@@ -19,6 +19,8 @@
 
 package com.metamx.tranquility.test
 
+import com.google.common.base.Charsets
+import com.google.common.io.ByteStreams
 import com.metamx.common.Granularity
 import com.metamx.common.ISE
 import com.metamx.common.scala.Jackson
@@ -27,17 +29,22 @@ import com.metamx.common.scala.timekeeper.TestingTimekeeper
 import com.metamx.common.scala.timekeeper.Timekeeper
 import com.metamx.tranquility.beam.ClusteredBeamTuning
 import com.metamx.tranquility.beam.RoundRobinBeam
+import com.metamx.tranquility.config.TranquilityConfig
+import com.metamx.tranquility.druid.DruidBeamConfig
 import com.metamx.tranquility.druid.DruidBeams
 import com.metamx.tranquility.druid.DruidEnvironment
 import com.metamx.tranquility.druid.DruidLocation
 import com.metamx.tranquility.druid.DruidRollup
 import com.metamx.tranquility.druid.MultipleFieldDruidSpatialDimension
 import com.metamx.tranquility.druid.SpecificDruidDimensions
+import com.metamx.tranquility.druid.TaskLocator
 import com.metamx.tranquility.test.DirectDruidTest._
 import com.metamx.tranquility.test.common._
 import com.metamx.tranquility.tranquilizer.MessageDroppedException
 import com.metamx.tranquility.tranquilizer.Tranquilizer
+import com.metamx.tranquility.typeclass.DefaultJsonWriter
 import com.metamx.tranquility.typeclass.JavaObjectWriter
+import com.metamx.tranquility.typeclass.Timestamper
 import com.twitter.util.Await
 import com.twitter.util.Future
 import com.twitter.util.NonFatal
@@ -46,6 +53,7 @@ import com.twitter.util.Throw
 import io.druid.data.input.impl.TimestampSpec
 import io.druid.granularity.QueryGranularity
 import io.druid.query.aggregation.LongSumAggregatorFactory
+import java.io.ByteArrayInputStream
 import java.{util => ju}
 import javax.ws.rs.core.MediaType
 import org.apache.curator.framework.CuratorFramework
@@ -53,7 +61,6 @@ import org.joda.time.DateTime
 import org.scala_tools.time.Imports._
 import org.scalatest.FunSuite
 import scala.collection.JavaConverters._
-import scala.collection.immutable.BitSet
 
 object DirectDruidTest
 {
@@ -75,7 +82,7 @@ object DirectDruidTest
     )
   }
 
-  def newBuilder(curator: CuratorFramework, timekeeper: Timekeeper): DruidBeams.Builder[SimpleEvent] = {
+  def newBuilder(curator: CuratorFramework, timekeeper: Timekeeper): DruidBeams.Builder[SimpleEvent, SimpleEvent] = {
     val dataSource = "xxx"
     val tuning = ClusteredBeamTuning(Granularity.HOUR, 0.minutes, 10.minutes, 1, 1, 1, 1)
     val rollup = DruidRollup(
@@ -93,6 +100,7 @@ object DirectDruidTest
     val druidLocation = new DruidLocation(druidEnvironment, dataSource)
     DruidBeams.builder[SimpleEvent]()
       .curator(curator)
+      .discoveryPath("/disco-fever")
       .location(druidLocation)
       .rollup(rollup)
       .tuning(tuning)
@@ -116,13 +124,15 @@ class DirectDruidTest
         indexing.start()
         try {
           timekeeper.now = new DateTime().hourOfDay().roundFloorCopy()
-          val eventsSent = Future.collect(generateEvents(timekeeper.now) map { event =>
-            indexing.send(event) transform {
-              case Return(()) => Future.value(true)
-              case Throw(e: MessageDroppedException) => Future.value(false)
-              case Throw(e) => Future.exception(e)
+          val eventsSent = Future.collect(
+            generateEvents(timekeeper.now) map { event =>
+              indexing.send(event) transform {
+                case Return(()) => Future.value(true)
+                case Throw(e: MessageDroppedException) => Future.value(false)
+                case Throw(e) => Future.exception(e)
+              }
             }
-          })
+          )
           assert(Await.result(eventsSent) === Seq(true, false, true))
           runTestQueriesAndAssertions(broker, timekeeper)
         }
@@ -161,13 +171,124 @@ class DirectDruidTest
         indexing.start()
         try {
           timekeeper.now = new DateTime().hourOfDay().roundFloorCopy()
-          val eventsSent = Future.collect(generateEvents(timekeeper.now) map { event =>
-            indexing.send(event) transform {
-              case Return(()) => Future.value(true)
-              case Throw(e: MessageDroppedException) => Future.value(false)
-              case Throw(e) => Future.exception(e)
+          val eventsSent = Future.collect(
+            generateEvents(timekeeper.now) map { event =>
+              indexing.send(event) transform {
+                case Return(()) => Future.value(true)
+                case Throw(e: MessageDroppedException) => Future.value(false)
+                case Throw(e) => Future.exception(e)
+              }
             }
-          })
+          )
+          assert(Await.result(eventsSent) === Seq(true, false, true))
+          runTestQueriesAndAssertions(broker, timekeeper)
+        }
+        catch {
+          case NonFatal(e) =>
+            throw new ISE(e, "Failed test")
+        }
+        finally {
+          indexing.stop()
+        }
+    }
+  }
+
+  test("Druid standalone - From config file - Custom type") {
+    withDruidStack {
+      (curator, broker, coordinator, overlord) =>
+        val timekeeper = new TestingTimekeeper
+        val configString = new String(
+          ByteStreams.toByteArray(getClass.getClassLoader.getResourceAsStream("direct-druid-test.yaml")),
+          Charsets.UTF_8
+        ).replaceAll("@ZKPLACEHOLDER@", curator.getZookeeperClient.getCurrentConnectionString)
+        val config = TranquilityConfig.read(new ByteArrayInputStream(configString.getBytes(Charsets.UTF_8)))
+        val indexing = DruidBeams
+          .fromConfig(config.getDataSource("xxx"), implicitly[Timestamper[SimpleEvent]], new DefaultJsonWriter)
+          .timekeeper(timekeeper)
+          .buildTranquilizer(config.getDataSource("xxx").tranquilizerBuilder())
+        indexing.start()
+        try {
+          timekeeper.now = new DateTime().hourOfDay().roundFloorCopy()
+          val eventsSent = Future.collect(
+            generateEvents(timekeeper.now) map { event =>
+              indexing.send(event) transform {
+                case Return(()) => Future.value(true)
+                case Throw(e: MessageDroppedException) => Future.value(false)
+                case Throw(e) => Future.exception(e)
+              }
+            }
+          )
+          assert(Await.result(eventsSent) === Seq(true, false, true))
+          runTestQueriesAndAssertions(broker, timekeeper)
+        }
+        catch {
+          case NonFatal(e) =>
+            throw new ISE(e, "Failed test")
+        }
+        finally {
+          indexing.stop()
+        }
+    }
+  }
+
+  ignore("Druid standalone - overlord based task discovery") {
+    withDruidStack {
+      (curator, broker, coordinator, overlord) =>
+        val timekeeper = new TestingTimekeeper
+        val indexing = newBuilder(curator, timekeeper)
+          .druidBeamConfig(DruidBeamConfig(taskLocator = TaskLocator.Overlord))
+          .timekeeper(timekeeper)
+          .buildTranquilizer()
+        indexing.start()
+        try {
+          timekeeper.now = new DateTime().hourOfDay().roundFloorCopy()
+          val eventsSent = Future.collect(
+            generateEvents(timekeeper.now) map { event =>
+              indexing.send(event) transform {
+                case Return(()) => Future.value(true)
+                case Throw(e: MessageDroppedException) => Future.value(false)
+                case Throw(e) => Future.exception(e)
+              }
+            }
+          )
+          assert(Await.result(eventsSent) === Seq(true, false, true))
+          runTestQueriesAndAssertions(broker, timekeeper)
+        }
+        catch {
+          case NonFatal(e) =>
+            throw new ISE(e, "Failed test")
+        }
+        finally {
+          indexing.stop()
+        }
+    }
+  }
+
+  test("Druid standalone - From config file - Java Map type") {
+    withDruidStack {
+      (curator, broker, coordinator, overlord) =>
+        val timekeeper = new TestingTimekeeper
+        val configString = new String(
+          ByteStreams.toByteArray(getClass.getClassLoader.getResourceAsStream("direct-druid-test.yaml")),
+          Charsets.UTF_8
+        ).replaceAll("@ZKPLACEHOLDER@", curator.getZookeeperClient.getCurrentConnectionString)
+        val config = TranquilityConfig.read(new ByteArrayInputStream(configString.getBytes(Charsets.UTF_8)))
+        val indexing = DruidBeams
+          .fromConfig(config.getDataSource("xxx"))
+          .timekeeper(timekeeper)
+          .buildTranquilizer(config.getDataSource("xxx").tranquilizerBuilder())
+        indexing.start()
+        try {
+          timekeeper.now = new DateTime().hourOfDay().roundFloorCopy()
+          val eventsSent = Future.collect(
+            generateEvents(timekeeper.now) map { event =>
+              indexing.send(event.toMap.asJava.asInstanceOf[java.util.Map[String, AnyRef]]) transform {
+                case Return(()) => Future.value(true)
+                case Throw(e: MessageDroppedException) => Future.value(false)
+                case Throw(e) => Future.exception(e)
+              }
+            }
+          )
           assert(Await.result(eventsSent) === Seq(true, false, true))
           runTestQueriesAndAssertions(broker, timekeeper)
         }

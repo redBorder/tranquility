@@ -46,6 +46,7 @@ import io.druid.query.aggregation.LongSumAggregatorFactory
 import io.druid.segment.realtime.firehose.ChatHandlerProvider
 import io.druid.segment.realtime.firehose.ClippedFirehoseFactory
 import io.druid.segment.realtime.firehose.NoopChatHandlerProvider
+import io.druid.server.metrics.EventReceiverFirehoseRegister
 import io.druid.timeline.partition.LinearShardSpec
 import org.joda.time.chrono.ISOChronology
 import org.scala_tools.time.Imports._
@@ -55,6 +56,11 @@ import scala.collection.JavaConverters._
 
 class DruidBeamTest extends FunSuite with Matchers
 {
+  test("GenerateAvailabilityGroup") {
+    val dt = new DateTime("2010-02-03T04:34:56.789", DateTimeZone.forID("America/Los_Angeles"))
+    assert(DruidBeamMaker.generateAvailabilityGroup("x", dt, 1) === "x-2010-02-03T12:34:56.789Z-0001")
+  }
+
   test("GenerateFirehoseId") {
     val dt = new DateTime("2010-02-03T12:34:56.789Z")
     assert(DruidBeamMaker.generateBaseFirehoseId("x", Granularity.MINUTE, dt, 1) === "x-34-0001")
@@ -70,7 +76,6 @@ class DruidBeamTest extends FunSuite with Matchers
   }
 
   test("Task JSON") {
-    val timestamper = null
     val druidBeamMaker = new DruidBeamMaker[Dict](
       DruidBeamConfig(),
       DruidLocation.create("druid/overlord", "mydatasource"),
@@ -83,7 +88,7 @@ class DruidBeamTest extends FunSuite with Matchers
         maxRowsInMemory = 100,
         intermediatePersistPeriod = 3.minutes,
         maxPendingPersists = 3
-      ),
+      ).toMap,
       DruidRollup(
         dimensions = SpecificDruidDimensions(Seq("dim1", "dim2"), Seq(DruidSpatialDimension.singleField("spatial1"))),
         aggregators = Seq(new LongSumAggregatorFactory("met1", "met1")),
@@ -105,8 +110,8 @@ class DruidBeamTest extends FunSuite with Matchers
         }
       ),
       null,
-      DruidGuicer.objectMapper
-    )(timestamper)
+      DruidGuicer.Default.objectMapper
+    )
     val interval = new Interval("2000/PT1H", ISOChronology.getInstanceUTC)
     val taskBytes = druidBeamMaker.taskBytes(
       interval,
@@ -115,7 +120,7 @@ class DruidBeamTest extends FunSuite with Matchers
       1,
       2
     )
-    val objectReader = DruidGuicer.objectMapper.reader(
+    val objectReader = DruidGuicer.Default.objectMapper.reader(
       new InjectableValues
       {
         override def findInjectableValue(
@@ -127,7 +132,9 @@ class DruidBeamTest extends FunSuite with Matchers
         {
           valueId match {
             case k: Key[_] if k.getTypeLiteral.getRawType == classOf[ChatHandlerProvider] => new NoopChatHandlerProvider
-            case k: Key[_] if k.getTypeLiteral.getRawType == classOf[ObjectMapper] => DruidGuicer.objectMapper
+            case k: Key[_] if k.getTypeLiteral.getRawType == classOf[ObjectMapper] => DruidGuicer.Default.objectMapper
+            case k: Key[_] if k.getTypeLiteral.getRawType == classOf[EventReceiverFirehoseRegister] =>
+              new EventReceiverFirehoseRegister
           }
         }
       }

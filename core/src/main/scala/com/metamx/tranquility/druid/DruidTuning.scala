@@ -19,6 +19,7 @@
 
 package com.metamx.tranquility.druid
 
+import com.metamx.common.scala.untyped.Dict
 import org.joda.time.Period
 import org.scala_tools.time.Imports._
 
@@ -28,6 +29,15 @@ case class DruidTuning(
   maxPendingPersists: Int = 0,
   buildV9Directly: Boolean = false
 )
+{
+  def toMap: Dict = Dict(
+    "type" -> "realtime",
+    "maxRowsInMemory" -> maxRowsInMemory,
+    "intermediatePersistPeriod" -> intermediatePersistPeriod.toString(),
+    "maxPendingPersists" -> maxPendingPersists,
+    "buildV9Directly" -> buildV9Directly
+  )
+}
 
 object DruidTuning
 {
@@ -35,9 +45,9 @@ object DruidTuning
     * Real-time Druid tuning parameters. These are passed directly to the Druid indexing service. See the Druid
     * documentation for their meanings.
     *
-    * @param maxRowsInMemory number of rows to aggregate before persisting
+    * @param maxRowsInMemory           number of rows to aggregate before persisting
     * @param intermediatePersistPeriod period that determines the rate at which intermediate persists occur
-    * @param maxPendingPersists number of persists that can be pending, but not started
+    * @param maxPendingPersists        number of persists that can be pending, but not started
     */
   @deprecated("use 'apply' or 'builder'", "0.7.3")
   def create(
@@ -53,6 +63,22 @@ object DruidTuning
     * Builder for DruidTuning objects.
     */
   def builder() = new Builder(DruidTuning())
+
+  /**
+    * For internal use in DruidBeams.
+    */
+  private[tranquility] def fromMap(d: Dict): DruidTuning = {
+    val defaults = DruidTuning()
+    DruidTuning(
+      maxRowsInMemory = d.get("maxRowsInMemory").map(String.valueOf(_).toInt).getOrElse(defaults.maxRowsInMemory),
+      intermediatePersistPeriod = d.get("intermediatePersistPeriod").map(new Period(_)).getOrElse(
+        defaults.intermediatePersistPeriod
+      ),
+      maxPendingPersists = d.get("maxPendingPersists").map(String.valueOf(_).toInt)
+        .getOrElse(defaults.maxPendingPersists),
+      buildV9Directly = d.get("buildV9Directly").map(String.valueOf(_).toBoolean).getOrElse(defaults.buildV9Directly)
+    )
+  }
 
   class Builder private[tranquility](config: DruidTuning)
   {

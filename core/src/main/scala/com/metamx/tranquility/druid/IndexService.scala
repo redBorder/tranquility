@@ -24,8 +24,10 @@ import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.control._
 import com.metamx.common.scala.exception._
 import com.metamx.common.scala.untyped._
+import com.metamx.tranquility.druid.IndexService.TaskHostPort
 import com.metamx.tranquility.druid.IndexService.TaskId
 import com.metamx.tranquility.finagle._
+import com.twitter.finagle.Addr
 import com.twitter.finagle.Service
 import com.twitter.finagle.http
 import com.twitter.finagle.util.DefaultTimer
@@ -63,13 +65,17 @@ class IndexService(
         req.headerMap("Content-Length") = taskBytes.length.toString
         req.content = Buf.ByteArray.Shared(taskBytes)
     }
-    log.info("Creating druid indexing task (service = %s)", environment.indexService)
+    log.info(
+      "Creating druid indexing task (service = %s): %s",
+      environment.indexServiceKey,
+      Jackson.pretty(Jackson.parse[Dict](taskBytes))
+    )
     call(taskRequest) map {
       d =>
-        str(d("task"))
+        str(dict(d)("task"))
     } foreach {
       taskId =>
-        log.info("Created druid indexing task with id: %s (service = %s)", taskId, environment.indexService)
+        log.info("Created druid indexing task with id: %s (service = %s)", taskId, environment.indexServiceKey)
     }
   }
 
@@ -77,21 +83,40 @@ class IndexService(
     val statusRequest = HttpGet("/druid/indexer/v1/task/%s/status" format taskId)
     call(statusRequest) map {
       d =>
-        d.get("status") map (sd => IndexStatus.fromString(str(dict(sd)("status")))) getOrElse TaskNotFound
+        dict(d).get("status") map (sd => IndexStatus.fromString(str(dict(sd)("status")))) getOrElse TaskNotFound
+    }
+  }
+
+  def runningTasks(): Future[Map[TaskId, TaskHostPort]] = {
+    val request = HttpGet("/druid/indexer/v1/runningTasks")
+    call(request) map {
+      xs =>
+        (list(xs).map(dict(_)) map { d =>
+          val taskId = str(d("id"))
+          val taskLocation = Option(d.getOrElse("location", null)).map(dict(_)).orNull
+          val taskHostPort = TaskHostPort.fromMap(taskLocation)
+          taskId -> taskHostPort
+        }).toMap
+    } foreach { tasks =>
+      for ((taskId, hostPort) <- tasks) {
+        log.debug(s"Found druid indexing task with id[$taskId] at[$hostPort].")
+      }
     }
   }
 
   override def close(deadline: Time): Future[Unit] = {
     this.synchronized {
+      closed = true
+
       if (_client != null) {
-        client.close(deadline)
+        _client.close(deadline)
       } else {
         Future.Done
       }
     }
   }
 
-  private def call(req: http.Request): Future[Dict] = {
+  private def call(req: http.Request): Future[Any] = {
     val retryable = IndexService.isTransient(config.indexRetryPeriod)
     FutureRetry.onErrors(Seq(retryable), new Backoff(15000, 2, 60000), new DateTime(0)) {
       client(req) map {
@@ -99,7 +124,7 @@ class IndexService(
           response.statusCode match {
             case code if code / 100 == 2 || code == 404 =>
               // 2xx or 404 generally mean legitimate responses from the index service
-              Jackson.parse[Dict](response.contentString) mapException {
+              Jackson.parse[Any](response.contentString) mapException {
                 case e: Exception => new IndexServicePermanentException(e, "Failed to parse response")
               }
 
@@ -108,21 +133,22 @@ class IndexService(
               // them as generic errors that can be retried
               throw new IndexServiceTransientException(
                 "Service[%s] temporarily unreachable: %s %s" format
-                  (environment.indexService, code, response.status.reason)
+                  (environment.indexServiceKey, code, response.status.reason)
               )
 
             case code if code / 100 == 5 =>
               // Server-side errors can be retried
               throw new IndexServiceTransientException(
                 "Service[%s] call failed with status: %s %s" format
-                  (environment.indexService, code, response.status.reason)
+                  (environment.indexServiceKey, code, response.status.reason)
               )
 
             case code =>
               // All other responses should not be retried (including non-404 client errors)
+              log.error("Non-retryable response for uri[%s] with content: %s" format (req.uri, response.contentString))
               throw new IndexServicePermanentException(
                 "Service[%s] call failed with status: %s %s" format
-                  (environment.indexService, code, response.status.reason)
+                  (environment.indexServiceKey, code, response.status.reason)
               )
           }
       }
@@ -153,6 +179,38 @@ object IndexService
 {
   type TaskId = String
   type TaskPayload = Dict
+
+  case class TaskHostPort(host: String, port: Int)
+  {
+    def isBound = host != null && host.nonEmpty && port > 0
+
+    def toAddr: Addr = {
+      if (!isBound) {
+        Addr.Neg
+      } else {
+        Addr.Bound(new InetSocketAddress(host, port))
+      }
+    }
+  }
+
+  object TaskHostPort
+  {
+    def unknown = TaskHostPort("", -1)
+
+    def fromMap(d: Dict): TaskHostPort = {
+      if (d == null) {
+        unknown
+      } else {
+        val hostOption = Option(d.getOrElse("host", null)).map(str(_))
+        val portOption = Option(d.getOrElse("port", null)).map(int(_))
+
+        (hostOption, portOption) match {
+          case (Some(host), Some(port)) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
+          case _ => unknown
+        }
+      }
+    }
+  }
 
   def isTransient(period: Period): Exception => Boolean = {
     (e: Exception) => Seq(

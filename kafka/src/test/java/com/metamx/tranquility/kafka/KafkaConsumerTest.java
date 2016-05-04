@@ -26,9 +26,9 @@ import com.google.common.collect.Maps;
 import com.google.common.io.Files;
 import com.metamx.common.scala.Jackson$;
 import com.metamx.tranquility.config.DataSourceConfig;
-import com.metamx.tranquility.druid.DruidGuicer;
+import com.metamx.tranquility.druid.DruidGuicer$;
 import com.metamx.tranquility.kafka.model.MessageCounters;
-import com.metamx.tranquility.kafka.model.TranquilityKafkaConfig;
+import com.metamx.tranquility.kafka.model.PropertiesBasedKafkaConfig;
 import com.metamx.tranquility.kafka.writer.TranquilityEventWriter;
 import com.metamx.tranquility.kafka.writer.WriterController;
 import io.druid.query.aggregation.AggregatorFactory;
@@ -149,7 +149,7 @@ public class KafkaConsumerTest
     consumerProperties.setProperty("topicPattern", topic);
 
     TranquilityEventWriter mockEventWriter = EasyMock.mock(TranquilityEventWriter.class);
-    mockEventWriter.send(EasyMock.anyObject());
+    mockEventWriter.send((byte[]) EasyMock.anyObject());
     EasyMock.expectLastCall().andStubAnswer(
         new IAnswer<Void>()
         {
@@ -171,7 +171,8 @@ public class KafkaConsumerTest
 
     EasyMock.replay(mockWriterController, mockEventWriter);
 
-    TranquilityKafkaConfig config = new ConfigurationObjectFactory(consumerProperties).build(TranquilityKafkaConfig.class);
+    PropertiesBasedKafkaConfig config = new ConfigurationObjectFactory(consumerProperties).build(
+        PropertiesBasedKafkaConfig.class);
 
     FireDepartment fd = new FireDepartment(
         new DataSchema(topic, null, new AggregatorFactory[]{}, null, new ObjectMapper()),
@@ -188,11 +189,11 @@ public class KafkaConsumerTest
         null
     );
 
-    Map<String, DataSourceConfig<TranquilityKafkaConfig>> datasourceConfigs = ImmutableMap.of(
+    Map<String, DataSourceConfig<PropertiesBasedKafkaConfig>> datasourceConfigs = ImmutableMap.of(
         topic,
         new DataSourceConfig<>(
-            config,
             topic,
+            config,
             fireDepartmentToScalaMap(fd)
         )
     );
@@ -209,7 +210,7 @@ public class KafkaConsumerTest
     Assert.assertEquals("Unexpected consumer offset", -1, getConsumerOffset(topic));
 
     for (int i = numMessages; i > 0; i--) {
-      producer.send(new ProducerRecord<>(topic, MESSAGE)).get();
+      producer.send(new ProducerRecord<String, String>(topic, MESSAGE)).get();
     }
     latch.await();
 
@@ -233,7 +234,7 @@ public class KafkaConsumerTest
     consumerProperties.setProperty("topicPattern", topic);
 
     TranquilityEventWriter mockEventWriter = EasyMock.mock(TranquilityEventWriter.class);
-    mockEventWriter.send(EasyMock.anyObject());
+    mockEventWriter.send((byte[]) EasyMock.anyObject());
     EasyMock.expectLastCall().andStubAnswer(
         new IAnswer<Void>()
         {
@@ -255,7 +256,8 @@ public class KafkaConsumerTest
 
     EasyMock.replay(mockWriterController, mockEventWriter);
 
-    TranquilityKafkaConfig config = new ConfigurationObjectFactory(consumerProperties).build(TranquilityKafkaConfig.class);
+    PropertiesBasedKafkaConfig config = new ConfigurationObjectFactory(consumerProperties).build(
+        PropertiesBasedKafkaConfig.class);
 
     FireDepartment fd = new FireDepartment(
         new DataSchema(topic, null, new AggregatorFactory[]{}, null, new ObjectMapper()),
@@ -272,11 +274,11 @@ public class KafkaConsumerTest
         null
     );
 
-    Map<String, DataSourceConfig<TranquilityKafkaConfig>> datasourceConfigs = ImmutableMap.of(
+    Map<String, DataSourceConfig<PropertiesBasedKafkaConfig>> datasourceConfigs = ImmutableMap.of(
         topic,
         new DataSourceConfig<>(
-            config,
             topic,
+            config,
             fireDepartmentToScalaMap(fd)
         )
     );
@@ -293,7 +295,7 @@ public class KafkaConsumerTest
     Assert.assertEquals("Unexpected consumer offset", -1, getConsumerOffset(topic));
 
     for (int i = numMessages; i > 0; i--) {
-      producer.send(new ProducerRecord<>(topic, MESSAGE)).get();
+      producer.send(new ProducerRecord<String, String>(topic, MESSAGE)).get();
     }
     latch.await();
 
@@ -333,7 +335,7 @@ public class KafkaConsumerTest
   ) throws IOException
   {
     return Jackson$.MODULE$.newObjectMapper().readValue(
-        DruidGuicer.objectMapper().writeValueAsBytes(fireDepartment),
+        DruidGuicer$.MODULE$.Default().objectMapper().writeValueAsBytes(fireDepartment),
         scala.collection.immutable.Map.class
     );
   }

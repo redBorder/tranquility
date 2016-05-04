@@ -1,6 +1,6 @@
 {
-   "dataSources" : {
-      "foo" : {
+   "dataSources" : [
+      {
          "spec" : {
             "dataSchema" : {
                "dataSource" : "foo",
@@ -39,10 +39,10 @@
                }
             },
             "tuningConfig" : {
-               "windowPeriod" : "PT10M",
                "type" : "realtime",
+               "windowPeriod" : "PT10M",
                "intermediatePersistPeriod" : "PT10M",
-               "maxRowsInMemory" : "100000"
+               "maxRowsInMemory" : 75000
             }
          },
          "properties" : {
@@ -50,10 +50,10 @@
             "task.replicants" : "1"
          }
       }
-   },
+   ],
    "properties" : {
-      "http.port" : "8200",
       "zookeeper.connect" : "localhost",
-      "http.threads" : "8"
+      "http.port" : "8200",
+      "http.threads" : "40"
    }
 }
