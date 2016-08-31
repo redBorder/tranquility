@@ -60,6 +60,9 @@ class BeamProducer(
 
   private val exception = new AtomicReference[Throwable]()
 
+  // stream => current stream partitions
+  private val partitionsRef = mutable.Map[String, Array[Int]]()
+
   override def start() {}
 
   override def stop() {
@@ -73,11 +76,35 @@ class BeamProducer(
   override def send(source: String, envelope: OutgoingMessageEnvelope) {
     val streamName = envelope.getSystemStream.getStream
     val message = envelope.getMessage
+    val partitionsReplicas = envelope.getKey.asInstanceOf[Array[Int]]
+
+    // Get the previous partitions from stream or create it
+    val partitionRef = partitionsRef.getOrElseUpdate(streamName, {
+      log.info("Creating new partitionsRef[%s] to datasource[%s]", "%s_%s".format(partitionsReplicas(0), partitionsReplicas(1)), streamName)
+      partitionsReplicas
+    })
+
+    // Check if the previous state partitions is the same that current desire partitions
+    //  * If it is different clean and stop the sender, and update partitionsRef.
+    if (!(partitionRef sameElements partitionsReplicas)) {
+      senders.remove(streamName) match {
+        case Some(t) =>
+          log.info("Stopping sender[%s] with partitionRef[%s]", streamName, "%s_%s".format(partitionRef(0), partitionRef(1)))
+          t.stop()
+        case None =>
+          log.info("Stream[%s] doesn't exists!", streamName)
+      }
+      partitionsRef.update(streamName, partitionsReplicas)
+    }
+
+    // Get sender from stream or create it with desire partitions.
     val sender = senders.getOrElseUpdate(
       streamName, {
-        log.info("Creating beam for stream[%s.%s].", systemName, streamName)
+        log.info("Creating beam for stream[%s.%s] with partitions[%s] and replicas[%s].",
+          systemName, streamName, partitionsReplicas(0), partitionsReplicas(1))
+
         val t = Tranquilizer.create(
-          beamFactory.makeBeam(new SystemStream(systemName, streamName), config),
+          beamFactory.makeBeam(new SystemStream(systemName, streamName), partitionsReplicas(0), partitionsReplicas(1), config),
           batchSize,
           maxPendingBatches,
           lingerMillis

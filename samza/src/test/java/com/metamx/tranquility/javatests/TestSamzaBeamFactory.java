@@ -46,7 +46,7 @@ public class TestSamzaBeamFactory implements BeamFactory
 {
 
   @Override
-  public Beam<Object> makeBeam(SystemStream stream, Config config)
+  public Beam<Object> makeBeam(SystemStream stream, int partitions, int replicas, Config config)
   {
     final String zkConnect = "localhost";
     final String dataSource = stream.getStream();

@@ -59,6 +59,7 @@ class IndexService(
 
       if (_client == null) {
         _client = overlordLocator.connect()
+
       }
 
       _client
