@@ -18,7 +18,7 @@
  */
 package com.metamx.tranquility.druid
 
-import org.scala_tools.time.Imports._
+import com.github.nscala_time.time.Imports._
 
 case class DruidBeamConfig(
   firehoseGracePeriod: Period = 5.minutes,
@@ -30,7 +30,9 @@ case class DruidBeamConfig(
   firehoseBufferSize: Int = 100000,
   overlordLocator: String = OverlordLocator.Curator,
   taskLocator: String = TaskLocator.Curator,
-  overlordPollPeriod: Period = 20.seconds
+  overlordPollPeriod: Period = 20.seconds,
+  basicAuthUser: String = "",
+  basicAuthPass: String = ""
 ) extends IndexServiceConfig
 
 object DruidBeamConfig
@@ -118,6 +120,16 @@ object DruidBeamConfig
       * Default is 20 seconds.
       */
     def overlordPollPeriod(x: Period) = new Builder(config.copy(overlordPollPeriod = x))
+
+    /**
+      * Username for HTTP Basic authentication.
+      */
+    def basicAuthUser(x: String) = new Builder(config.copy(basicAuthUser = x))
+
+    /**
+      * Password for HTTP Basic authentication.
+      */
+    def basicAuthPass(x: String) = new Builder(config.copy(basicAuthPass = x))
 
     def build(): DruidBeamConfig = config
   }

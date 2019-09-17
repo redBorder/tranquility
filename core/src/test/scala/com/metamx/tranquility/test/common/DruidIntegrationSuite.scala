@@ -20,41 +20,49 @@
 package com.metamx.tranquility.test.common
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.github.nscala_time.time.Imports._
 import com.google.common.base.Charsets
 import com.google.common.io.CharStreams
 import com.google.common.io.Files
 import com.google.inject.Injector
 import com.metamx.collections.spatial.search.RectangularBound
 import com.metamx.common.lifecycle.Lifecycle
-import com.metamx.common.scala.Jackson
-import com.metamx.common.scala.Logging
 import com.metamx.common.scala.concurrent._
 import com.metamx.common.scala.control._
 import com.metamx.common.scala.timekeeper.Timekeeper
 import com.metamx.common.scala.untyped._
+import com.metamx.common.scala.Jackson
+import com.metamx.common.scala.Logging
 import io.druid.cli.CliBroker
 import io.druid.cli.CliCoordinator
 import io.druid.cli.CliOverlord
 import io.druid.cli.GuiceRunnable
 import io.druid.granularity.QueryGranularities
 import io.druid.guice.GuiceInjectors
-import io.druid.query.Druids
-import io.druid.query.Query
 import io.druid.query.aggregation.AggregatorFactory
 import io.druid.query.aggregation.LongSumAggregatorFactory
 import io.druid.query.filter.SpatialDimFilter
+import io.druid.query.Druids
+import io.druid.query.Query
 import io.druid.server.ClientQuerySegmentWalker
 import java.io.File
 import java.io.InputStreamReader
 import java.net.BindException
 import java.net.URLClassLoader
+import java.util.concurrent.atomic.AtomicInteger
 import org.apache.curator.framework.CuratorFramework
-import org.scala_tools.time.Imports._
 import org.scalatest.FunSuite
 import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 import scala.reflect.classTag
-import scala.util.Random
+
+private object PortGenerator
+{
+  private val port = new AtomicInteger(28000)
+
+  // Instead of using random ports with random failures lets use atomic
+  def reserveNext(count: Int = 1): Int = port.getAndAdd(count)
+}
 
 trait DruidIntegrationSuite extends Logging with CuratorRequiringSuite
 {
@@ -129,7 +137,7 @@ trait DruidIntegrationSuite extends Logging with CuratorRequiringSuite
   def withBroker[A](curator: CuratorFramework)(f: DruidServerHandle => A): A = {
     // Randomize, but don't bother checking for conflicts
     retryOnErrors(ifException[BindException] untilCount 5) {
-      val brokerPort = new Random().nextInt(100) + 28100
+      val brokerPort = PortGenerator.reserveNext()
       val configFile = writeConfig(
         "druid-broker.properties",
         Map(
@@ -150,7 +158,7 @@ trait DruidIntegrationSuite extends Logging with CuratorRequiringSuite
   def withCoordinator[A](curator: CuratorFramework)(f: DruidServerHandle => A): A = {
     // Randomize, but don't bother checking for conflicts
     retryOnErrors(ifException[BindException] untilCount 5) {
-      val coordinatorPort = new Random().nextInt(100) + 28100
+      val coordinatorPort = PortGenerator.reserveNext()
       val configFile = writeConfig(
         "druid-coordinator.properties",
         Map(
@@ -171,7 +179,7 @@ trait DruidIntegrationSuite extends Logging with CuratorRequiringSuite
   def withOverlord[A](curator: CuratorFramework)(f: DruidServerHandle => A): A = {
     // Randomize, but don't bother checking for conflicts
     retryOnErrors(ifException[BindException] untilCount 5) {
-      val overlordPort = new Random().nextInt(100) + 28200
+      val overlordPort = PortGenerator.reserveNext(2) // We need one more port for :DRUIDFORKPORT:
       val configFile = writeConfig(
         "druid-overlord.properties",
         Map(

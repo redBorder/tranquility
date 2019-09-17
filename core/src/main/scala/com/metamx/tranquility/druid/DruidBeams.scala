@@ -18,9 +18,12 @@
  */
 package com.metamx.tranquility.druid
 
+import javax.net.ssl.SSLContext
+
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.dataformat.smile.SmileFactory
 import com.fasterxml.jackson.jaxrs.smile.SmileMediaTypes
+import com.github.nscala_time.time.Imports._
 import com.metamx.common.logger.Logger
 import com.metamx.common.scala.Jackson
 import com.metamx.common.scala.net.curator.Disco
@@ -32,12 +35,8 @@ import com.metamx.common.scala.untyped.dict
 import com.metamx.common.scala.untyped.normalizeJava
 import com.metamx.emitter.core.LoggingEmitter
 import com.metamx.emitter.service.ServiceEmitter
-import com.metamx.tranquility.beam.Beam
-import com.metamx.tranquility.beam.ClusteredBeam
-import com.metamx.tranquility.beam.ClusteredBeamTuning
-import com.metamx.tranquility.beam.MergingPartitioningBeam
-import com.metamx.tranquility.beam.MessageHolder
-import com.metamx.tranquility.beam.TransformingBeam
+import com.metamx.common.scala.Logging
+import com.metamx.tranquility.beam._
 import com.metamx.tranquility.config.DataSourceConfig
 import com.metamx.tranquility.config.PropertiesBasedConfig
 import com.metamx.tranquility.druid.input.InputRowObjectWriter
@@ -50,20 +49,16 @@ import com.metamx.tranquility.finagle.FinagleRegistry
 import com.metamx.tranquility.finagle.FinagleRegistryConfig
 import com.metamx.tranquility.partition.MapPartitioner
 import com.metamx.tranquility.partition.Partitioner
+import com.metamx.tranquility.security.SSLContextMaker
 import com.metamx.tranquility.tranquilizer.Tranquilizer
 import com.metamx.tranquility.typeclass.DefaultJsonWriter
 import com.metamx.tranquility.typeclass.JavaObjectWriter
 import com.metamx.tranquility.typeclass.ObjectWriter
 import com.metamx.tranquility.typeclass.Timestamper
 import com.twitter.finagle.Service
-import io.druid.data.input.ByteBufferInputRowParser
 import io.druid.data.input.InputRow
-import io.druid.data.input.impl.DimensionSchema
 import io.druid.data.input.impl.DimensionSchema.ValueType
-import io.druid.data.input.impl.InputRowParser
-import io.druid.data.input.impl.MapInputRowParser
-import io.druid.data.input.impl.StringInputRowParser
-import io.druid.data.input.impl.TimestampSpec
+import io.druid.data.input.impl._
 import io.druid.segment.realtime.FireDepartment
 import java.nio.ByteBuffer
 import java.{lang => jl}
@@ -72,7 +67,6 @@ import javax.ws.rs.core.MediaType
 import org.apache.curator.framework.CuratorFramework
 import org.apache.curator.framework.CuratorFrameworkFactory
 import org.apache.curator.retry.ExponentialBackoffRetry
-import org.scala_tools.time.Imports._
 import scala.collection.JavaConverters._
 import scala.language.reflectiveCalls
 import scala.reflect.runtime.universe.TypeTag
@@ -87,12 +81,13 @@ import scala.reflect.runtime.universe.typeTag
   * val dataSource = "foo"
   * val dimensions = Seq("bar")
   * val aggregators = Seq(new LongSumAggregatorFactory("baz", "baz"))
+  * val isRollup = true
   * val sender = DruidBeams
   *   .builder[Map[String, Any]](eventMap => new DateTime(eventMap("timestamp")))
   *   .curator(curator)
   *   .discoveryPath("/test/discovery")
   *   .location(DruidLocation(new DruidEnvironment("druid:local:indexer", "druid:local:firehose:%s"), dataSource))
-  *   .rollup(DruidRollup(dimensions, aggregators, QueryGranularities.MINUTE))
+  *   .rollup(DruidRollup(dimensions, aggregators, QueryGranularities.MINUTE, isRollup))
   *   .tuning(new ClusteredBeamTuning(Granularity.HOUR, 10.minutes, 1, 1))
   *   .buildTranquilizer()
   * val future = sender.send(Map("timestamp" -> "2010-01-02T03:04:05.678Z", "bar" -> "hey", "baz" -> 3))
@@ -102,10 +97,12 @@ import scala.reflect.runtime.universe.typeTag
   * Your event type (in this case, `Map[String, Any]`) must be serializable via Jackson to JSON that Druid can
   * understand. If Jackson is not an appropriate choice, you can provide an ObjectWriter via `.objectWriter(...)`.
   */
-object DruidBeams
+object DruidBeams extends Logging
 {
   private val DefaultScalaObjectMapper = Jackson.newObjectMapper()
   private val DefaultTimestampSpec     = new TimestampSpec("timestamp", "iso", null)
+
+  val DefaultZookeeperPath     = "/tranquility/beams"
 
   /**
     * Start a builder for Java Maps based on a particular Tranquility dataSourceConfig. Not all of the realtime spec
@@ -166,20 +163,20 @@ object DruidBeams
           case t if t == typeTag[ByteBuffer] =>
             val trialParser = mkparser()
             require(
-              trialParser.isInstanceOf[ByteBufferInputRowParser],
-              s"Expected ByteBufferInputRowParser, got[${trialParser.getClass.getName}]"
+              trialParser.isInstanceOf[InputRowParser[ByteBuffer]],
+              s"Expected InputRowParser of ByteBuffer, got[${trialParser.getClass.getName}]"
             )
             val threadLocalParser = new ThreadLocalInputRowParser(mkparser)
-            msg => threadLocalParser.get().asInstanceOf[ByteBufferInputRowParser].parse(msg.asInstanceOf[ByteBuffer])
+            msg => threadLocalParser.get().asInstanceOf[InputRowParser[ByteBuffer]].parse(msg.asInstanceOf[ByteBuffer])
 
           case t if t == typeTag[Array[Byte]] =>
             val trialParser = mkparser()
             require(
-              trialParser.isInstanceOf[ByteBufferInputRowParser],
-              s"Expected ByteBufferInputRowParser, got[${trialParser.getClass.getName}]"
+              trialParser.isInstanceOf[InputRowParser[ByteBuffer]],
+              s"Expected InputRowParser of ByteBuffer, got[${trialParser.getClass.getName}]"
             )
             val threadLocalParser = new ThreadLocalInputRowParser(mkparser)
-            msg => threadLocalParser.get().asInstanceOf[ByteBufferInputRowParser].parse(
+            msg => threadLocalParser.get().asInstanceOf[InputRowParser[ByteBuffer]].parse(
               ByteBuffer.wrap(msg.asInstanceOf[Array[Byte]])
             )
 
@@ -336,7 +333,8 @@ object DruidBeams
           )
       },
       aggregators = fireDepartment.getDataSchema.getAggregators,
-      indexGranularity = fireDepartment.getDataSchema.getGranularitySpec.getQueryGranularity
+      indexGranularity = fireDepartment.getDataSchema.getGranularitySpec.getQueryGranularity,
+      isRollup = fireDepartment.getDataSchema.getGranularitySpec.isRollup
     )
     builder(inputFnFn(rollup, mkparser, timestampSpec), timestamperFn(timestampSpec))
       .curatorFactory(
@@ -346,6 +344,7 @@ object DruidBeams
           .retryPolicy(new ExponentialBackoffRetry(1000, 20, 30000))
       )
       .discoveryPath(config.propertiesBasedConfig.discoPath)
+      .clusteredBeamZkBasePath(config.propertiesBasedConfig.zookeeperPath)
       .location(DruidLocation(environment, fireDepartment.getDataSchema.getDataSource))
       .rollup(rollup)
       .timestampSpec(timestampSpec)
@@ -360,6 +359,13 @@ object DruidBeams
       .partitions(config.propertiesBasedConfig.taskPartitions)
       .replicants(config.propertiesBasedConfig.taskReplicants)
       .druidBeamConfig(config.propertiesBasedConfig.druidBeamConfig)
+      .basicAuthUser(config.propertiesBasedConfig.basicAuthUser)
+      .basicAuthPass(config.propertiesBasedConfig.basicAuthPass)
+      .tlsEnable(config.propertiesBasedConfig.tlsEnable)
+      .tlsProtocol(config.propertiesBasedConfig.tlsProtocol)
+      .tlsTrustStoreAlgorithm(config.propertiesBasedConfig.tlsTrustStoreAlgorithm)
+      .tlsTrustStoreType(config.propertiesBasedConfig.tlsTrustStoreType)
+      .tlsTrustStorePassword(config.propertiesBasedConfig.tlsTrustStorePassword)
   }
 
   /**
@@ -731,6 +737,102 @@ object DruidBeams
     }
 
     /**
+      * Set the username for basic HTTP authentication.
+      *
+      * @param basicAuthUser
+      * @return new builder
+      */
+    def basicAuthUser(basicAuthUser: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _basicAuthUser = Some(basicAuthUser)
+      ))
+    }
+
+    /**
+      * Set the password for basic HTTP authentication.
+      *
+      * @param basicAuthPass
+      * @return new builder
+      */
+    def basicAuthPass(basicAuthPass: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _basicAuthPass = Some(basicAuthPass)
+      ))
+    }
+
+    /**
+      * Enable TLS communications.
+      *
+      * @param tlsEnable
+      * @return new builder
+      */
+    def tlsEnable(tlsEnable: Boolean) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsEnable = Some(tlsEnable)
+      ))
+    }
+
+    /**
+      * Set the TLS protocol.
+      *
+      * @param tlsProtocol
+      * @return new builder
+      */
+    def tlsProtocol(tlsProtocol: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsProtocol = Some(tlsProtocol)
+      ))
+    }
+
+    /**
+      * Set the TLS truststore type.
+      *
+      * @param tlsTrustStoreType
+      * @return new builder
+      */
+    def tlsTrustStoreType(tlsTrustStoreType: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsTrustStoreType = Some(tlsTrustStoreType)
+      ))
+    }
+
+    /**
+      * Set the TLS truststore path.
+      *
+      * @param tlsTrustStorePath
+      * @return new builder
+      */
+    def tlsTrustStorePath(tlsTrustStorePath: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsTrustStorePath = Some(tlsTrustStorePath)
+      ))
+    }
+
+    /**
+      * Set the TLS truststore algorithm.
+      *
+      * @param tlsTrustStoreAlgorithm
+      * @return new builder
+      */
+    def tlsTrustStoreAlgorithm(tlsTrustStoreAlgorithm: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsTrustStoreAlgorithm = Some(tlsTrustStoreAlgorithm)
+      ))
+    }
+
+    /**
+      * Set the TLS truststore password.
+      *
+      * @param tlsTrustStorePassword
+      * @return new builder
+      */
+    def tlsTrustStorePassword(tlsTrustStorePassword: String) = {
+      new Builder[InputType, EventType](config.copy(
+        _tlsTrustStorePassword = Some(tlsTrustStorePassword)
+      ))
+    }
+
+    /**
       * Build a Beam using this DruidBeams builder.
       *
       * @return a beam
@@ -855,7 +957,15 @@ object DruidBeams
     _beamMergeFn: Option[Seq[Beam[EventType]] => Beam[EventType]] = None,
     _alertMap: Option[Dict] = None,
     _objectWriter: Option[ObjectWriter[EventType]] = None,
-    _timestamper: Option[Timestamper[EventType]] = None
+    _timestamper: Option[Timestamper[EventType]] = None,
+    _basicAuthUser: Option[String] = None,
+    _basicAuthPass: Option[String] = None,
+    _tlsEnable: Option[Boolean] = None,
+    _tlsProtocol: Option[String] = None,
+    _tlsTrustStoreType: Option[String] = None,
+    _tlsTrustStorePath: Option[String] = None,
+    _tlsTrustStoreAlgorithm: Option[String] = None,
+    _tlsTrustStorePassword: Option[String] = None
   )
   {
     def buildAll() = new {
@@ -885,7 +995,7 @@ object DruidBeams
       val timestampSpec           = _timestampSpec getOrElse {
         DefaultTimestampSpec
       }
-      val clusteredBeamZkBasePath = _clusteredBeamZkBasePath getOrElse "/tranquility/beams"
+      val clusteredBeamZkBasePath = _clusteredBeamZkBasePath getOrElse DefaultZookeeperPath
       val clusteredBeamIdent      = _clusteredBeamIdent getOrElse {
         "%s/%s" format(location.environment.indexServiceKey, location.dataSource)
       }
@@ -910,8 +1020,21 @@ object DruidBeams
           def discoPath = discoveryPath
         }
       )
-      val finagleRegistry         = _finagleRegistry getOrElse {
-        new FinagleRegistry(FinagleRegistryConfig(), Nil)
+      //val generalConfig           = _generalConfig getOrElse PropertiesBasedConfig.fromDict(Dict(), classOf[PropertiesBasedConfig])
+
+      val finagleRegistry = _finagleRegistry getOrElse {
+        val finagleRegistryConfig = FinagleRegistryConfig
+          .builder()
+          .sslContextOption(SSLContextMaker.createSSLContextOption(
+            _tlsEnable,
+            _tlsProtocol,
+            _tlsTrustStoreType,
+            _tlsTrustStorePath,
+            _tlsTrustStoreAlgorithm,
+            _tlsTrustStorePassword
+          ))
+          .build()
+        new FinagleRegistry(finagleRegistryConfig, Nil)
       }
       val overlordLocator         = OverlordLocator.create(
         druidBeamConfig.overlordLocator,
@@ -921,7 +1044,9 @@ object DruidBeams
       val indexService            = new IndexService(
         location.environment,
         druidBeamConfig,
-        overlordLocator
+        overlordLocator,
+        _basicAuthUser,
+        _basicAuthPass
       )
       val taskLocator             = TaskLocator.create(
         druidBeamConfig.taskLocator,

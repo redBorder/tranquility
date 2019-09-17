@@ -71,8 +71,14 @@ Any of these properties can be specified either globally, or per-dataSource.
 
 |Property|Description|Default|
 |--------|-----------|-------|
-|`druid.discovery.curator.path`|Curator service discovery path.|/druid/discovery|
+|`druid.discovery.curator.path`|Curator service discovery path. This is assumed to be on the same zookeeper cluster as `zookeeper.connect` refers to.|/druid/discovery|
 |`druid.selectors.indexing.serviceName`|The druid.service name of the indexing service Overlord node.|druid/overlord|
+|`druid.tls.enable`|Enable TLS when communicating with Druid. If the Druid cluster does not have TLS enabled, this must be set to false as well.|false|
+|`druid.tls.protocol`|TLS protocol version to use.|'TLSv1.2'|
+|`druid.tls.trustStorePath`|Path of the keystore containing trusted root certificates, used to validate the certificate provided by Druid.|''|
+|`druid.tls.trustStoreType`|Type of the keystore containig trusted root certificates.|KeyStore.getDefaultType()|
+|`druid.tls.trustStoreAlgorithm`|Algorithm to be used by TrustManager to validate certificate chains.|TrustManagerFactory.getDefaultAlgorithm()|
+|`druid.tls.trustStorePassword`|Password for the keystore containing trusted root certifcates.|''|
 |`druidBeam.firehoseBufferSize`|Size of buffer used by firehose to store events.|100000|
 |`druidBeam.firehoseChunkSize`|Maximum number of events to send to Druid in one HTTP request.|1000|
 |`druidBeam.firehoseGracePeriod`|Druid indexing tasks will shut down this long after the windowPeriod has elapsed.|PT5M|
@@ -83,6 +89,8 @@ Any of these properties can be specified either globally, or per-dataSource.
 |`druidBeam.overlordPollPeriod`|How often to poll the Overlord for task locations. Only applies if taskLocator is "overlord".|PT20S|
 |`druidBeam.randomizeTaskId`|True if we should add a random suffix to Druid task IDs. This is useful for testing.|false|
 |`druidBeam.taskLocator`|Strategy for locating Druid tasks. Can be "curator" or "overlord".|curator|
+|`druidBeam.basicAuthUser`|Username for Basic HTTP authentication. This is needed if the Druid cluster has Basic HTTP authentication enabled.|""|
+|`druidBeam.basicAuthPass`|Password for Basic HTTP authentication. This is needed if the Druid cluster has Basic HTTP authentication enabled.|""|
 |`serialization.format`|Serialization format for objects sent to Druid. Can be "json" or "smile". Does not apply if you define a custom objectWriter.|json|
 |`task.partitions`|Number of Druid partitions to create.|1|
 |`task.replicants`|Number of instances of each Druid partition to create. This is the *total* number of instances, so 2 replicants means 2 tasks will be created.|1|
@@ -93,6 +101,7 @@ Any of these properties can be specified either globally, or per-dataSource.
 |`tranquility.maxPendingBatches`|Maximum number of batches that may be in flight before we block and wait for one to finish.|5|
 |`zookeeper.connect`|ZooKeeper connect string.|none; must be provided|
 |`zookeeper.timeout`|ZooKeeper session timeout. ISO8601 duration.|PT20S|
+|`zookeeper.path`|ZooKeeper znode to use for Tranquility's internal coordination.|/tranquility/beams|
 
 ### Code
 
