@@ -16,22 +16,26 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package com.metamx.tranquility.beam
 
-import com.github.nscala_time.time.Imports._
-import com.metamx.common.scala.untyped._
+package com.metamx.tranquility.security
 
-/**
- * Makes beams for particular intervals and partition numbers. Can also serialize and deserialize beam representations.
- *
- * @tparam A event type
- * @tparam BeamType specific beam type we know how to create
- */
-trait BeamMaker[A, BeamType <: Beam[A]]
+import com.metamx.common.scala.Logging
+import com.twitter.finagle.{http, Service}
+import com.twitter.finagle.http.BasicAuth
+
+object BasicAuthClientMaker extends Logging
 {
-  def newBeam(interval: Interval, partition: Int): BeamType
-
-  def toDict(beam: BeamType): Dict
-
-  def fromDict(d: Dict): BeamType
+  def wrapBaseClient(
+    baseClient: Service[http.Request, http.Response],
+    basicAuthUser: Option[String],
+    basicAuthPass: Option[String]
+  ): Service[http.Request, http.Response] = {
+    if (basicAuthUser.isDefined && basicAuthPass.isDefined) {
+      log.info("Using BasicAuth.Client.")
+      BasicAuth.client(basicAuthUser.get, basicAuthPass.get).andThen(baseClient)
+    } else {
+      log.info("Using client without authentication.")
+      baseClient
+    }
+  }
 }

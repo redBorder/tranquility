@@ -18,20 +18,16 @@
  */
 package com.metamx.tranquility.finagle
 
+import com.github.nscala_time.time.Imports._
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.net.curator.Disco
 import com.metamx.common.scala.net.finagle.DiscoResolver
-import com.twitter.finagle.Name
-import com.twitter.finagle.Resolver
-import com.twitter.finagle.Service
-import com.twitter.finagle.ServiceProxy
+import com.twitter.finagle._
 import com.twitter.finagle.builder.ClientBuilder
-import com.twitter.finagle.http
 import com.twitter.util.Future
 import com.twitter.util.Time
 import java.util.concurrent.atomic.AtomicBoolean
-import org.scala_tools.time.Implicits._
 import scala.collection.Set
 import scala.collection.mutable
 
@@ -82,7 +78,7 @@ class FinagleRegistry(
         }
       )
     }
-    val client = ClientBuilder()
+    val clientBuilder = ClientBuilder()
       .name(id)
       .codec(http.Http())
       .dest(Name.Bound(resolver.bind(name), id))
@@ -91,7 +87,12 @@ class FinagleRegistry(
       .logger(FinagleLogger)
       .daemon(true)
       .failFast(config.finagleEnableFailFast)
-      .build()
+
+    val client = config.sslContextOption match {
+      case Some(sslContext) => clientBuilder.tls(sslContext).build()
+      case None => clientBuilder.build()
+    }
+
     new SharedService(
       new ServiceProxy(client)
       {

@@ -19,6 +19,8 @@
 package com.metamx.tranquility.samza
 
 import com.metamx.common.scala.Logging
+import com.metamx.common.scala.Predef.EffectOps
+import com.metamx.common.scala.collection.mutable.ConcurrentMap
 import com.metamx.tranquility.tranquilizer.MessageDroppedException
 import com.metamx.tranquility.tranquilizer.Tranquilizer
 import java.util.concurrent.atomic.AtomicReference
@@ -56,19 +58,17 @@ class BeamProducer(
   )
 
   // stream => sender
-  private val senders = mutable.Map[String, Tranquilizer[Any]]()
+  private val senders = ConcurrentMap[String, Tranquilizer[Any]]()
 
   private val exception = new AtomicReference[Throwable]()
 
-  // stream => current stream partitions
+   // stream => current stream partitions
   private val partitionsRef = mutable.Map[String, Array[Int]]()
 
   override def start() {}
 
   override def stop() {
-    for (sender <- senders.values) {
-      sender.stop()
-    }
+    senders.values.foreach(_.stop())
   }
 
   override def register(source: String) {}
@@ -98,24 +98,27 @@ class BeamProducer(
     }
 
     // Get sender from stream or create it with desire partitions.
-    val sender = senders.getOrElseUpdate(
-      streamName, {
-        log.info("Creating beam for stream[%s.%s] with partitions[%s] and replicas[%s].",
+    val sender = senders.get(streamName) match {
+      case Some(x) => x
+      case None =>
+        senders.synchronized {
+          senders.getOrElseUpdate(
+            streamName, {
+               log.info("Creating beam for stream[%s.%s] with partitions[%s] and replicas[%s].",
           systemName, streamName, partitionsReplicas(0), partitionsReplicas(1))
-
-        val t = Tranquilizer.create(
-          beamFactory.makeBeam(new SystemStream(systemName, streamName), partitionsReplicas(0), partitionsReplicas(1), config),
-          batchSize,
-          maxPendingBatches,
-          lingerMillis
-        )
-        t.start()
-        t
-      }
-    )
+              Tranquilizer.create(
+                beamFactory.makeBeam(new SystemStream(systemName, streamName), partitionsReplicas(0), partitionsReplicas(1), config),
+                batchSize,
+                maxPendingBatches,
+                lingerMillis
+              ) withEffect(_.start())
+            }
+          )
+        }
+    }
 
     sender.send(message) handle {
-      case e: MessageDroppedException => // Suppress
+      case _: MessageDroppedException => // Suppress
       case e => exception.compareAndSet(null, e)
     }
 
@@ -124,10 +127,7 @@ class BeamProducer(
 
   override def flush(source: String) {
     // So flippin' lazy. Flush ALL the data!
-    for ((streamName, sender) <- senders) {
-      sender.flush()
-    }
-
+    senders.values.foreach(_.flush())
     maybeThrow()
   }
 

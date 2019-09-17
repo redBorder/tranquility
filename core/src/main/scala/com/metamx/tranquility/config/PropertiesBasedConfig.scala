@@ -19,11 +19,15 @@
 
 package com.metamx.tranquility.config
 
+import java.security.KeyStore
+import javax.net.ssl.TrustManagerFactory
+
 import com.metamx.common.scala.net.curator.DiscoAnnounceConfig
 import com.metamx.common.scala.net.curator.DiscoConfig
 import com.metamx.common.scala.untyped.Dict
 import com.metamx.tranquility.beam.ClusteredBeamTuning
 import com.metamx.tranquility.druid.DruidBeamConfig
+import com.metamx.tranquility.druid.DruidBeams
 import com.metamx.tranquility.tranquilizer.Tranquilizer
 import java.util.Properties
 import org.joda.time.Period
@@ -63,10 +67,13 @@ abstract class PropertiesBasedConfig(
   def serializationFormat: String = "json"
 
   @Config(Array("zookeeper.connect"))
-  def zookeeperConnect: String
+  def zookeeperConnect: String = "localhost:2181"
 
   @Config(Array("zookeeper.timeout"))
   def zookeeperTimeout: Period = new Period("PT20S")
+
+  @Config(Array("zookeeper.path"))
+  def zookeeperPath: String = DruidBeams.DefaultZookeeperPath
 
   @Config(Array("tranquility.maxBatchSize"))
   def tranquilityMaxBatchSize: Int = Tranquilizer.DefaultMaxBatchSize
@@ -110,6 +117,30 @@ abstract class PropertiesBasedConfig(
   @Config(Array("druidBeam.overlordPollPeriod"))
   def overlordPollPeriod = DruidBeamConfig().overlordPollPeriod
 
+  @Config(Array("druidBeam.basicAuthUser"))
+  def basicAuthUser: String = DruidBeamConfig().basicAuthUser
+
+  @Config(Array("druidBeam.basicAuthPass"))
+  def basicAuthPass: String = DruidBeamConfig().basicAuthPass
+
+  @Config(Array("druid.tls.enable"))
+  def tlsEnable: Boolean = false
+
+  @Config(Array("druid.tls.protocol"))
+  def tlsProtocol: String = "TLSv1.2"
+
+  @Config(Array("druid.tls.trustStoreType"))
+  def tlsTrustStoreType: String = KeyStore.getDefaultType()
+
+  @Config(Array("druid.tls.trustStorePath"))
+  def tlsTrustStorePath: String  = ""
+
+  @Config(Array("druid.tls.trustStoreAlgorithm"))
+  def tlsTrustStoreAlgorithm: String  = TrustManagerFactory.getDefaultAlgorithm()
+
+  @Config(Array("druid.tls.trustStorePassword"))
+  def tlsTrustStorePassword: String  = ""
+
   def druidBeamConfig: DruidBeamConfig = DruidBeamConfig.builder()
     .firehoseGracePeriod(firehoseGracePeriod)
     .firehoseQuietPeriod(firehoseQuietPeriod)
@@ -121,6 +152,8 @@ abstract class PropertiesBasedConfig(
     .overlordLocator(overlordLocator)
     .taskLocator(taskLocator)
     .overlordPollPeriod(overlordPollPeriod)
+    .basicAuthUser(basicAuthUser)
+    .basicAuthPass(basicAuthPass)
     .build()
 
   override def discoAnnounce: Option[DiscoAnnounceConfig] = None

@@ -18,31 +18,36 @@
  */
 package com.metamx.tranquility.druid
 
+import com.github.nscala_time.time.Imports._
 import com.metamx.common.Backoff
 import com.metamx.common.scala.Jackson
 import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.control._
 import com.metamx.common.scala.exception._
 import com.metamx.common.scala.untyped._
+import com.metamx.tranquility.config.PropertiesBasedConfig
 import com.metamx.tranquility.druid.IndexService.TaskHostPort
 import com.metamx.tranquility.druid.IndexService.TaskId
 import com.metamx.tranquility.finagle._
+import com.metamx.tranquility.security.BasicAuthClientMaker
+import com.twitter.finagle.util.DefaultTimer
 import com.twitter.finagle.Addr
+import com.twitter.finagle.Address
 import com.twitter.finagle.Service
 import com.twitter.finagle.http
-import com.twitter.finagle.util.DefaultTimer
 import com.twitter.io.Buf
 import com.twitter.util.Closable
 import com.twitter.util.Future
 import com.twitter.util.Time
 import com.twitter.util.Timer
 import java.net.InetSocketAddress
-import org.scala_tools.time.Imports._
 
 class IndexService(
   environment: DruidEnvironment,
   config: IndexServiceConfig,
-  overlordLocator: OverlordLocator
+  overlordLocator: OverlordLocator,
+  basicAuthUser: Option[String],
+  basicAuthPass: Option[String]
 ) extends Closable
 {
   private implicit val timer: Timer = DefaultTimer.twitter
@@ -58,8 +63,11 @@ class IndexService(
       }
 
       if (_client == null) {
-        _client = overlordLocator.connect()
-
+        _client = BasicAuthClientMaker.wrapBaseClient(
+          overlordLocator.connect(),
+          basicAuthUser,
+          basicAuthPass
+        )
       }
 
       _client
@@ -198,7 +206,7 @@ object IndexService
       if (!isBound) {
         Addr.Neg
       } else {
-        Addr.Bound(new InetSocketAddress(host, port))
+        Addr.Bound(Address(new InetSocketAddress(host, port)))
       }
     }
   }
@@ -213,9 +221,12 @@ object IndexService
       } else {
         val hostOption = Option(d.getOrElse("host", null)).map(str(_))
         val portOption = Option(d.getOrElse("port", null)).map(int(_))
+        val tlsPortOption = Option(d.getOrElse("tlsPort", null)).map(int(_))
 
-        (hostOption, portOption) match {
-          case (Some(host), Some(port)) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
+        (hostOption, portOption, tlsPortOption) match {
+          case (Some(host), Some(_), Some(tlsPort)) if host.nonEmpty && tlsPort > 0 => TaskHostPort(host, tlsPort)
+          case (Some(host), Some(port), None) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
+          case (Some(host), Some(port), Some(_)) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
           case _ => unknown
         }
       }
